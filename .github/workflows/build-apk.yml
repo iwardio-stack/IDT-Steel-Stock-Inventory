@@ -1,13 +1,17 @@
 name: Build IDT Steel Stock Inventory APK
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
+    name: Build IDT Steel Stock Inventory
     runs-on: ubuntu-latest
 
     steps:
@@ -18,29 +22,181 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.11.1'
+          gradle-version: "8.11.1"
+
+      - name: Locate v2 project ZIP
+        shell: bash
+        run: |
+          set -e
+
+          ZIP_FILE=""
+
+          for candidate in \
+            "IDT-Steel-Stock-Inventory-v2.zip" \
+            "IDT-Steel-Stock-Inventory-v2.ZIP"
+          do
+            if [ -f "$candidate" ]; then
+              ZIP_FILE="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: IDT-Steel-Stock-Inventory-v2.zip was not found."
+            echo ""
+            echo "ZIP files currently in the repository:"
+            find . -maxdepth 3 -type f -iname "*.zip" -print
+            exit 1
+          fi
+
+          echo "Using project ZIP: $ZIP_FILE"
+          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
 
       - name: Extract Android project
+        shell: bash
         run: |
+          set -e
+
+          rm -rf build-project
           mkdir -p build-project
-          unzip -q IDT-Steel-Stock-Inventory-Design-v1.zip -d build-project
 
-          PROJECT_DIR=$(find build-project -type f -name settings.gradle.kts -print -quit | xargs dirname)
+          unzip -q "$ZIP_FILE" -d build-project
 
-          echo "Android project found at: $PROJECT_DIR"
+          echo "Searching for Android Gradle project..."
+
+          PROJECT_DIR=""
+
+          PROJECT_DIR="$(find build-project \
+            -type f \
+            -name "settings.gradle.kts" \
+            -exec dirname {} \; | head -n 1 || true)"
+
+          if [ -z "$PROJECT_DIR" ]; then
+            PROJECT_DIR="$(find build-project \
+              -type f \
+              -name "settings.gradle" \
+              -exec dirname {} \; | head -n 1 || true)"
+          fi
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERROR: No Android Gradle project was found."
+            echo ""
+            echo "Files extracted from ZIP:"
+            find build-project -maxdepth 6 -type f | sort
+            exit 1
+          fi
+
+          echo "Android project found at:"
+          echo "$PROJECT_DIR"
+
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
+      - name: Verify Android project
+        shell: bash
+        run: |
+          set -e
+
+          echo "Checking project..."
+
+          test -f "$PROJECT_DIR/settings.gradle.kts" || \
+          test -f "$PROJECT_DIR/settings.gradle"
+
+          test -f "$PROJECT_DIR/app/build.gradle.kts" || \
+          test -f "$PROJECT_DIR/app/build.gradle"
+
+          echo "Project verification successful."
+
+      - name: Prepare Android SDK
+        shell: bash
+        run: |
+          set -e
+
+          SDKMANAGER=""
+
+          for candidate in \
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "$ANDROID_HOME/cmdline-tools/bin/sdkmanager" \
+            "/usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager" \
+            "/usr/local/lib/android/sdk/cmdline-tools/bin/sdkmanager"
+          do
+            if [ -x "$candidate" ]; then
+              SDKMANAGER="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME" \
+              -type f \
+              -name sdkmanager \
+              -perm -111 \
+              2>/dev/null | head -n 1 || true)"
+          fi
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "ERROR: sdkmanager could not be found."
+            exit 1
+          fi
+
+          echo "Using sdkmanager:"
+          echo "$SDKMANAGER"
+
+          SDK_BIN="$(dirname "$SDKMANAGER")"
+          echo "$SDK_BIN" >> "$GITHUB_PATH"
+
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+
+          "$SDKMANAGER" \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
       - name: Build debug APK
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: gradle assembleDebug --stacktrace --no-daemon
+        shell: bash
+        run: |
+          set -e
+
+          cd "$PROJECT_DIR"
+
+          echo "Building IDT Steel Stock Inventory..."
+
+          gradle \
+            --no-daemon \
+            --stacktrace \
+            clean \
+            :app:assembleDebug
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -e
+
+          APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -f "$APK" ]; then
+            echo "ERROR: APK was not generated."
+            echo ""
+            echo "Searching for generated APK files:"
+            find "$PROJECT_DIR" \
+              -type f \
+              -name "*.apk" \
+              -print || true
+            exit 1
+          fi
+
+          echo "======================================"
+          echo "APK BUILD SUCCESSFUL"
+          echo "======================================"
+          ls -lh "$APK"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: IDT-Steel-Stock-Inventory-debug
-          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
+          name: IDT-Steel-Stock-Inventory-APK-v2
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
